@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理後台 - 閱讀護照系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { display: none; font-family: 'Microsoft JhengHei', sans-serif; }
+        .tab-active { border-bottom: 4px solid #10b981; color: #065f46; font-weight: bold; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+    <nav class="bg-white shadow-sm border-b px-8 py-4 flex justify-between items-center sticky top-0 z-50">
+        <div class="flex items-center space-x-2">
+            <span class="text-2xl">🛠️</span>
+            <h1 class="text-xl font-black text-slate-800">閱讀護照管理系統</h1>
+        </div>
+        <div class="flex items-center space-x-4">
+            <button onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700 transition">匯出 Excel</button>
+            <button onclick="location.reload()" class="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-300 transition">整理頁面</button>
+        </div>
+    </nav>
+
+    <div class="max-w-7xl mx-auto px-8 py-8">
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <p class="text-slate-400 text-sm mb-1">待處理審核</p>
+                <h3 id="pendingCount" class="text-3xl font-black text-orange-500">0</h3>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <p class="text-slate-400 text-sm mb-1">累計過審本數</p>
+                <h3 id="approvedCount" class="text-3xl font-black text-green-600">0</h3>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <p class="text-slate-400 text-sm mb-1">各年級分佈 (心得數)</p>
+                <canvas id="gradeChart" class="max-h-20"></canvas>
+            </div>
+        </div>
+
+        <div class="flex space-x-8 mb-6 border-b border-slate-200">
+            <button onclick="switchTab('pending')" id="tabPending" class="pb-3 tab-active">🚨 待審核清單</button>
+            <button onclick="switchTab('all')" id="tabAll" class="pb-3 text-slate-400 hover:text-slate-600">📜 全體資料一覽</button>
+        </div>
+
+        <div id="contentSection" class="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-slate-50 text-slate-500 text-sm uppercase">
+                        <th class="p-4 border-b">學生資訊</th>
+                        <th class="p-4 border-b">閱讀書籍</th>
+                        <th class="p-4 border-b">心得內容 (100字+)</th>
+                        <th class="p-4 border-b">目前狀態</th>
+                        <th class="p-4 border-b text-center">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTableBody" class="text-slate-700">
+                    </tbody>
+            </table>
+            <div id="loadingInfo" class="p-20 text-center text-slate-400">載入中，請稍候...</div>
+        </div>
+    </div>
+
+    <script>
+        const GAS_URL = '你的_GAS_部署網址'; // 務必更換
+        const ADMIN_PASS = "你的密碼123";
+        let rawData = [];
+        let currentView = 'pending'; // 'pending' or 'all'
+
+        // 1. 安全驗證
+        function authenticate() {
+            const input = prompt("🔐 請輸入管理員通行碼：");
+            if (input === ADMIN_PASS) {
+                document.body.style.display = "block";
+                loadData();
+            } else {
+                alert("密碼錯誤，請重新整理頁面再試一次。");
+                window.location.href = "index.html";
+            }
+        }
+
+        // 2. 獲取資料
+        async function loadData() {
+            try {
+                const res = await fetch(GAS_URL);
+                rawData = await res.json();
+                renderDashboard();
+            } catch (e) {
+                alert("無法連線至後端系統，請檢查 GAS 網址是否正確。");
+            }
+        }
+
+        // 3. 渲染儀表板與圖表
+        function renderDashboard() {
+            const pending = rawData.filter(d => d.status === "待審核");
+            const approved = rawData.filter(d => d.status === "已通過");
+
+            document.getElementById('pendingCount').innerText = pending.length;
+            document.getElementById('approvedCount').innerText = approved.length;
+            document.getElementById('loadingInfo').style.display = "none";
+
+            // 年級圖表分析
+            const gradeStats = rawData.reduce((acc, curr) => {
+                const g = curr.class ? curr.class[0] + "年級" : "未知";
+                acc[g] = (acc[g] || 0) + 1;
+                return acc;
+            }, {});
+
+            new Chart(document.getElementById('gradeChart'), {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(gradeStats),
+                    datasets: [{ data: Object.values(gradeStats), backgroundColor: '#10b981' }]
+                },
+                options: { plugins: { legend: { display: false } }, scales: { y: { display: false }, x: { grid: { display: false } } } }
+            });
+
+            renderTable();
+        }
+
+        // 4. 渲染表格
+        function renderTable() {
+            const displayData = currentView === 'pending' 
+                ? rawData.filter(d => d.status === "待審核") 
+                : rawData;
+
+            const tbody = document.getElementById('dataTableBody');
+            tbody.innerHTML = displayData.map(d => `
+                <tr class="border-b hover:bg-slate-50 transition">
+                    <td class="p-4">
+                        <div class="font-bold text-slate-800">${d.name}</div>
+                        <div class="text-xs text-slate-400">${d.class} | ${new Date(d.timestamp).toLocaleDateString()}</div>
+                    </td>
+                    <td class="p-4 text-sm font-medium text-blue-700 italic">《${d.booktitle}》</td>
+                    <td class="p-4">
+                        <div class="text-xs text-slate-500 max-w-md line-clamp-2" title="${d.content}">${d.content}</div>
+                    </td>
+                    <td class="p-4">
+                        <span class="px-2 py-1 rounded-full text-[10px] font-bold ${d.status === '已通過' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}">
+                            ${d.status}
+                        </span>
+                    </td>
+                    <td class="p-4 text-center">
+                        <div class="flex justify-center space-x-2">
+                            ${d.status === '待審核' ? `
+                                <button onclick="changeStatus('${d.timestamp}', '已通過')" class="bg-green-500 text-white px-3 py-1 rounded text-xs hover:bg-green-600">通過</button>
+                            ` : ''}
+                            <button onclick="editContent('${d.timestamp}', \`${d.content}\`)" class="bg-blue-100 text-blue-600 px-3 py-1 rounded text-xs hover:bg-blue-200">修正</button>
+                            <button onclick="changeStatus('${d.timestamp}', 'DELETE')" class="bg-red-50 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-100">刪除</button>
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+
+            if(displayData.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-20 text-center text-slate-300 italic text-sm">目前沒有任何資料</td></tr>`;
+            }
+        }
+
+        // 5. 操作功能：更新狀態
+        async function changeStatus(ts, newStatus) {
+            if(!confirm(`確定要將狀態改為 [${newStatus === 'DELETE' ? '刪除' : newStatus}] 嗎？`)) return;
+            
+            await fetch(GAS_URL, {
+                method: 'POST',
+                body: JSON.stringify({ action: "updateStatus", timestamp: ts, newStatus: newStatus })
+            });
+            location.reload();
+        }
+
+        // 6. 操作功能：管理員編輯內容
+        async function editContent(ts, oldContent) {
+            const newContent = prompt("👨‍🏫 管理員正在修正學生心得內容：", oldContent);
+            if (newContent && newContent !== oldContent) {
+                // 這裡複用 edit 邏輯，但管理員修改時可選擇不重置書名
+                const targetRecord = rawData.find(d => d.timestamp === ts);
+                await fetch(GAS_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ 
+                        action: "edit", 
+                        timestamp: ts, 
+                        book: targetRecord.booktitle, 
+                        content: newContent 
+                    })
+                });
+                alert("內容修正成功！");
+                location.reload();
+            }
+        }
+
+        // 7. 切換頁籤
+        function switchTab(view) {
+            currentView = view;
+            document.getElementById('tabPending').className = (view === 'pending') ? 'pb-3 tab-active' : 'pb-3 text-slate-400';
+            document.getElementById('tabAll').className = (view === 'all') ? 'pb-3 tab-active' : 'pb-3 text-slate-400';
+            renderTable();
+        }
+
+        // 8. 匯出 Excel
+        function exportToExcel() {
+            const ws = XLSX.utils.json_to_sheet(rawData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "閱讀紀錄清單");
+            XLSX.writeFile(wb, `閱讀護照總表_${new Date().toLocaleDateString()}.xlsx`);
+        }
+
+        // 執行驗證
+        authenticate();
+    </script>
+</body>
+</html>
